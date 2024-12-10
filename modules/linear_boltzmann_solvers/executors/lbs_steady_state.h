@@ -19,7 +19,13 @@ public:
   explicit SteadyStateSolver(const InputParameters& params);
 
   void Initialize() override;
+
   void Execute() override;
+
+private:
+  bool ReadRestartData();
+
+  bool WriteRestartData();
 };
 
 } // namespace opensn

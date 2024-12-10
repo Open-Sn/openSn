@@ -50,9 +50,9 @@ protected:
                            bool additive,
                            bool suppress_wg_scat = false);
 
-  void WriteRestartData();
+  bool WriteRestartData();
 
-  void ReadRestartData();
+  bool ReadRestartData();
 };
 
 } // namespace opensn
