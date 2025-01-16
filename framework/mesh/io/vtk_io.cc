@@ -76,11 +76,11 @@ CreateCellFromVTKPolyhedron(vtkCell* vtk_cell)
 
   switch (sub_type)
   {
-    // The cell vertex ids do not need to be changed, but the face ordering needs to be CCW
-    case CellType::HEXAHEDRON:
+    // The cell vertex ids in VTK is the same as in OpenSn, so we don't
+    // need to remap the vertices. We do however need to remap the faces.
     {
       std::vector<std::vector<uint64_t>> face_vids = {
-        {0, 1, 5, 4}, {1, 2, 6, 5}, {2, 3, 7, 6}, {0, 4, 7, 3}, {0, 3, 2, 1}, {4, 5, 6, 7}};
+        {1, 2, 6, 5}, {3, 0, 4, 7}, {2, 3, 7, 6}, {0, 1, 5, 4}, {4, 5, 6, 7}, {3, 2, 1, 0}};
       for (int f = 0; f < 6; ++f)
       {
         UnpartitionedMesh::LightWeightFace face;
