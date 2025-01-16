@@ -46,13 +46,12 @@ SteadyStateSolver::Execute()
 {
   CALI_CXX_MARK_SCOPE("SteadyStateSolver::Execute");
 
-  if (not lbs_solver_.Options().read_restart_path.empty())
+  auto& options = lbs_solver_.Options();
+
+  if (not options.read_restart_path.empty())
   {
     if (ReadRestartData())
-    {
-      lbs_solver_.UpdateRestartWriteTime();
       log.Log() << "Successfully read restart data." << std::endl;
-    }
     else
       log.Log() << "Failed to read restart data." << std::endl;
   }
@@ -60,9 +59,9 @@ SteadyStateSolver::Execute()
   auto& ags_solver = *lbs_solver_.GetAGSSolver();
   ags_solver.Solve();
 
-  if (lbs_solver_.RestartsEnabled())
+  if (options.restart_writes_enabled)
   {
-    if(WriteRestartData())
+    if (WriteRestartData())
     {
       lbs_solver_.UpdateRestartWriteTime();
       log.Log() << "Successfully wrote restart data." << std::endl;
@@ -71,10 +70,10 @@ SteadyStateSolver::Execute()
       log.Log() << "Failed to write restart data." << std::endl;
   }
 
-  if (lbs_solver_.Options().use_precursors)
+  if (options.use_precursors)
     lbs_solver_.ComputePrecursors();
 
-  if (lbs_solver_.Options().adjoint)
+  if (options.adjoint)
     lbs_solver_.ReorientAdjointSolution();
 
   lbs_solver_.UpdateFieldFunctions();
@@ -120,7 +119,8 @@ SteadyStateSolver::ReadRestartData()
 bool
 SteadyStateSolver::WriteRestartData()
 {
-  auto fname = lbs_solver_.Options().write_restart_path;
+  auto& options = lbs_solver_.Options();
+  auto fname = options.write_restart_path;
   auto& phi_old_local = lbs_solver_.PhiOldLocal();
   auto& groupsets = lbs_solver_.Groupsets();
 
@@ -130,24 +130,27 @@ SteadyStateSolver::WriteRestartData()
   {
     // Write phi
     success &= H5WriteDataset1D<double>(file, "phi_old", phi_old_local);
- 
+
     // Write psi
-    int gs_id = 0;
-    for (auto gs : lbs_solver_.Groupsets())
+    if (options.write_delayed_psi_to_restart)
     {
-      if (gs.angle_agg)
+      int gs_id = 0;
+      for (auto gs : lbs_solver_.Groupsets())
       {
-        auto psi = gs.angle_agg->GetOldDelayedAngularDOFsAsSTLVector();
-        if (not psi.empty())
+        if (gs.angle_agg)
         {
-          std::string name = "delayed_psi_old_gs" + std::to_string(gs_id);
-          success &= H5WriteDataset1D<double>(file, name, psi);
+          auto psi = gs.angle_agg->GetOldDelayedAngularDOFsAsSTLVector();
+          if (not psi.empty())
+          {
+            std::string name = "delayed_psi_old_gs" + std::to_string(gs_id);
+            success &= H5WriteDataset1D<double>(file, name, psi);
+          }
         }
+        ++gs_id;
       }
-      ++gs_id;
     }
 
-     H5Fclose(file);
+    H5Fclose(file);
   }
 
   return success;
