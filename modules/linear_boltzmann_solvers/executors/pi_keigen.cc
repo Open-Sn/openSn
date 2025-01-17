@@ -51,7 +51,6 @@ PowerIterationKEigen::PowerIterationKEigen(const InputParameters& params)
     groupsets_(lbs_solver_.Groupsets()),
     front_gs_(groupsets_.front())
 {
-  lbs_solver_.Options().enable_ags_restart_write = false;
 }
 
 void
@@ -59,6 +58,7 @@ PowerIterationKEigen::Initialize()
 {
   lbs_solver_.Initialize();
 
+  auto& options = lbs_solver_.Options();
   active_set_source_function_ = lbs_solver_.GetActiveSetSourceFunction();
   ags_solver_ = lbs_solver_.GetAGSSolver();
 
@@ -73,25 +73,35 @@ PowerIterationKEigen::Initialize()
     wgs_context->rhs_src_scope.Unset(APPLY_AGS_FISSION_SOURCES); // rhs_scope
   }
 
-  ags_solver_->Verbosity(lbs_solver_.Options().verbose_ags_iterations);
+  ags_solver_->Verbosity(options.verbose_ags_iterations);
 
   front_wgs_solver_ = lbs_solver_.GetWGSSolvers().at(front_gs_.id);
   front_wgs_context_ = std::dynamic_pointer_cast<WGSContext>(front_wgs_solver_->GetContext());
 
   OpenSnLogicalErrorIf(not front_wgs_context_, ": Casting failed");
 
-  if (reset_phi0_ and lbs_solver_.Options().read_restart_path.empty())
+  bool restart_successful = false;
+  if (not options.read_restart_path.empty())
+  {
+    if (ReadRestartData())
+    {
+      restart_successful = true;
+      log.Log() << "Successfully read restart data." << std::endl;
+    }
+    else
+      log.Log() << "Failed to read restart data." << std::endl;
+  }
+
+  if (reset_phi0_ and not restart_successful)
     LBSVecOps::SetPhiVectorScalarValues(lbs_solver_, PhiSTLOption::PHI_OLD, 1.0);
 }
 
 void
 PowerIterationKEigen::Execute()
 {
+  auto& options = lbs_solver_.Options();
   double k_eff_prev = 1.0;
   double k_eff_change = 1.0;
-
-  if (not lbs_solver_.Options().read_restart_path.empty())
-    ReadRestartData();
 
   // Start power iterations
   int nit = 0;
@@ -120,7 +130,7 @@ PowerIterationKEigen::Execute()
       converged = true;
 
     // Print iteration summary
-    if (lbs_solver_.Options().verbose_outer_iterations)
+    if (options.verbose_outer_iterations)
     {
       std::stringstream k_iter_info;
       k_iter_info << program_timer.GetTimeString() << " "
@@ -133,8 +143,16 @@ PowerIterationKEigen::Execute()
       log.Log() << k_iter_info.str();
     }
 
-    if (lbs_solver_.RestartsEnabled() and lbs_solver_.TriggerRestartDump())
-      WriteRestartData();
+    if (options.restart_writes_enabled and lbs_solver_.TriggerRestartDump())
+    {
+      if (WriteRestartData())
+      {
+        lbs_solver_.UpdateRestartWriteTime();
+        log.Log() << "Successfully wrote restart data." << std::endl;
+      }
+      else
+        log.Log() << "Failed to write restart data." << std::endl;
+    }
 
     if (converged)
       break;
@@ -142,8 +160,16 @@ PowerIterationKEigen::Execute()
 
   // If restarts are enabled, always write a restart dump upon convergence or
   // when we reach the iteration limit
-  if (lbs_solver_.RestartsEnabled())
-    WriteRestartData();
+  if (options.restart_writes_enabled)
+  {
+    if (WriteRestartData())
+    {
+      lbs_solver_.UpdateRestartWriteTime();
+      log.Log() << "Successfully wrote restart data." << std::endl;
+    }
+    else
+      log.Log() << "Failed to write restart data." << std::endl;
+  }
 
   // Print summary
   int total_num_sweeps = 0;
@@ -160,7 +186,7 @@ PowerIterationKEigen::Execute()
             << " (Total number of sweeps:" << total_num_sweeps << ")"
             << "\n\n";
 
-  if (lbs_solver_.Options().use_precursors)
+  if (options.use_precursors)
   {
     lbs_solver_.ComputePrecursors();
     Scale(lbs_solver_.PrecursorsNewLocal(), 1.0 / k_eff_);
@@ -202,63 +228,88 @@ PowerIterationKEigen::SetLBSScatterSource(const std::vector<double>& input,
   }
 }
 
-void
-PowerIterationKEigen::WriteRestartData()
-{
-  std::string fbase = lbs_solver_.Options().write_restart_path.string();
-  std::string fname = fbase + std::to_string(opensn::mpi_comm.rank()) + ".restart.h5";
-
-  // Write data
-  bool location_succeeded = true;
-  hid_t file = H5Fcreate(fname.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-  if (not file)
-    location_succeeded = false;
-  else
-  {
-    location_succeeded = H5WriteDataset1D<double>(file, "phi_old", lbs_solver_.PhiOldLocal()) and
-                         H5CreateAttribute<double>(file, "keff", k_eff_) and
-                         H5CreateAttribute<double>(file, "Fprev", F_prev_);
-    H5Fclose(file);
-  }
-
-  bool global_succeeded = true;
-  mpi_comm.all_reduce(location_succeeded, global_succeeded, mpi::op::logical_and<bool>());
-  if (global_succeeded)
-  {
-    log.Log() << "Successfully wrote restart data to " << fbase << "X.restart.h5";
-    lbs_solver_.UpdateLastRestartWriteTime();
-  }
-  else
-    log.Log0Error() << "Failed to write restart data to " << fbase << "X.restart.h5";
-}
-
-void
+bool
 PowerIterationKEigen::ReadRestartData()
 {
-  std::string fbase = lbs_solver_.Options().read_restart_path.string();
-  std::string fname = fbase + std::to_string(opensn::mpi_comm.rank()) + ".restart.h5";
+  auto& fname = lbs_solver_.Options().read_restart_path;
+  auto& phi_old_local = lbs_solver_.PhiOldLocal();
+  auto& groupsets = lbs_solver_.Groupsets();
 
-  bool location_succeeded = true;
-  hid_t file = H5Fopen(fname.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
-  if (not file)
-    location_succeeded = false;
-  else
+  auto file = H5Fopen(fname.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+  bool success = (file >= 0);
+  if (file >= 0)
   {
-    auto& phi_old_local = lbs_solver_.PhiOldLocal();
-    phi_old_local.clear();
-    phi_old_local = H5ReadDataset1D<double>(file, "phi_old");
-    location_succeeded = (not phi_old_local.empty()) and
-                         H5ReadAttribute<double>(file, "keff", k_eff_) and
-                         H5ReadAttribute<double>(file, "Fprev", F_prev_);
+    // Read phi
+    success &= H5ReadDataset1D<double>(file, "phi_old", phi_old_local);
+
+    // Read psi
+    int gs_id = 0;
+    for (auto gs : groupsets)
+    {
+      if (gs.angle_agg)
+      {
+        std::string name = "delayed_psi_old_gs" + std::to_string(gs_id);
+        if (H5Has(file, name))
+        {
+          std::vector<double> psi;
+          success &= H5ReadDataset1D<double>(file, name.c_str(), psi);
+          gs.angle_agg->SetOldDelayedAngularDOFsFromSTLVector(psi);
+        }
+      }
+      ++gs_id;
+    }
+
+    // Read keff and Fprev
+    success &= H5ReadAttribute<double>(file, "keff", k_eff_) and
+               H5ReadAttribute<double>(file, "Fprev", F_prev_);
+
     H5Fclose(file);
   }
 
-  bool global_succeeded = true;
-  mpi_comm.all_reduce(location_succeeded, global_succeeded, mpi::op::logical_and<bool>());
-  if (global_succeeded)
-    log.Log() << "Successfully read restart data from " << fbase << "X.restart.h5";
-  else
-    throw std::invalid_argument("Failed to read restart data from " + fbase + "X.restart.h5");
+  return success;
+}
+
+bool
+PowerIterationKEigen::WriteRestartData()
+{
+  auto& options = lbs_solver_.Options();
+  auto fname = options.write_restart_path;
+  auto& phi_old_local = lbs_solver_.PhiOldLocal();
+  auto& groupsets = lbs_solver_.Groupsets();
+
+  auto file = H5Fcreate(fname.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+  bool success = (file >= 0);
+  if (file >= 0)
+  {
+    // Write phi
+    success &= H5WriteDataset1D<double>(file, "phi_old", phi_old_local);
+
+    // Write psi
+    if (options.write_delayed_psi_to_restart)
+    {
+      int gs_id = 0;
+      for (auto gs : lbs_solver_.Groupsets())
+      {
+        if (gs.angle_agg)
+        {
+          auto psi = gs.angle_agg->GetOldDelayedAngularDOFsAsSTLVector();
+          if (not psi.empty())
+          {
+            std::string name = "delayed_psi_old_gs" + std::to_string(gs_id);
+            success &= H5WriteDataset1D<double>(file, name, psi);
+          }
+        }
+        ++gs_id;
+      }
+    }
+
+    success &= H5CreateAttribute<double>(file, "keff", k_eff_) and
+               H5CreateAttribute<double>(file, "Fprev", F_prev_);
+
+    H5Fclose(file);
+  }
+
+  return success;
 }
 
 } // namespace opensn
