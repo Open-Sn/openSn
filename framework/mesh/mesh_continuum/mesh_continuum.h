@@ -125,6 +125,10 @@ public:
   /// Checks whether a point is within a cell.
   bool CheckPointInsideCell(const Cell& cell, const Vector3& point) const;
 
+  /// Checks whether a point is within a cell face.
+  bool
+  CheckPointInsideCellFace(const Cell& cell, const std::size_t face_i, const Vector3& point) const;
+
   MeshType Type() const { return mesh_type_; }
 
   void SetType(MeshType type) { mesh_type_ = type; }
@@ -162,6 +166,11 @@ public:
 
   /// Compute volume per material id's
   void ComputeVolumePerMaterialID() const;
+
+  /// Get the face vertices of a tetrahedron contained within the given face and
+  /// side of a polyhedron.
+  std::array<std::array<Vector3, 3>, 4>
+  GetTetrahedralFaceVertices(const Cell& cell, const CellFace& face, const size_t side) const;
 
 private:
   /// Spatial dimension

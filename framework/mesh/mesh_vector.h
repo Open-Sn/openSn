@@ -171,18 +171,6 @@ struct Vector3
   }
 
   /**
-   * Tensor product of two vectors.
-   * \f$ \vec{\vec{T}} = \vec{x} \otimes \vec{y} \f$
-   */
-  TensorRank2Dim3 OTimes(const Vector3& that) const;
-
-  /**
-   * Dot product of vector and a rank-2 tensor.
-   * \f$ \vec{w} = \vec{x} \bullet \vec{\vec{T}} \f$
-   */
-  Vector3 Dot(const TensorRank2Dim3& that) const;
-
-  /**
    * Vector cross-product.
    * \f$ \vec{w} = \vec{x} \times \vec{y} \f$
    */
@@ -262,6 +250,16 @@ struct Vector3
     std::ostringstream out;
     out << "[" << x << " " << y << " " << z << "]";
     return out.str();
+  }
+
+  /// Absolute equality check with another point.
+  bool AbsoluteEquals(const Vector3& other, const double tol = 1.e-6) const
+  {
+    if (std::abs(other.x - x) > tol)
+      return false;
+    if (std::abs(other.y - y) > tol)
+      return false;
+    return std::abs(other.z - z) < tol;
   }
 
   static constexpr size_t Size() { return 3; }
